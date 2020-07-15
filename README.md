@@ -1,5 +1,5 @@
-# R--Projects
-Personal Projects using R
+# R-Projects
+Projects: Sentiment Analysis, Movie Recommendation
 
 ## Project 1: Sentiment Analysis
 Using rtweet package and finding the sentiment of people tweeting in English about the conversion of Hagia Sophia in July 2020.
