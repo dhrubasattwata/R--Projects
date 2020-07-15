@@ -1,0 +1,282 @@
+---
+title: "Recommender System"
+author: "Dhrubasattwata Roy Choudhury"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Recommender Systems
+A recommender system, or a recommendation system, can be thought of as a subclass of information filtering system that seeks to predict the best “rating” or “preference” a user would give to an item which is typically obtained by optimizing for objectives like total clicks, total revenue, and overall sales.  
+The basic principle of recommendations is that there are significant dependencies between user- and item-centric activity. For example, a user who is interested in sportswear is more likely to be interested in other sports wear brand, rather than a luxury apparel.
+
+Classify recommenders into two categories:    
+Prediction Problem: The first approach is where we would like to predict the rating value of a user-item combination.  
+Ranking Problem: Recommend the top-k items for a particular user or determine the top-k users to target for a specific topic.
+
+Types of recommender systems:    
+Collaborative Filtering method: using data on ratings, and browsing behaviors (Interaction Data)  
+Content Base Filtering method: about each users and items (Attribution Information)  
+Knowledge-Based recommender system that is based on explicitly specified user requirements.  
+
+Hybrid Systems are then used to combined the advantages of these approaches to have a robust performing system across a wide variety of applications.
+
+Implement a Collaborative Filtering Recommender System… In spite of a lot of known issues like the cold start problem, this kind of systems is broadly adopted, easier to model and known to deliver good results. The basic idea of CFR systems is that, if two users share the same interests in the past, e.g. they liked the same book or the same movie, they will also have similar tastes in the future.  
+
+### Import the packages
+```{r}
+library(recommenderlab)
+library(ggplot2)
+library(data.table)
+library(reshape2)
+library(tidyverse)
+library(caret)
+library(lubridate)
+library(scales)
+library(ggthemes)
+```
+
+### Dataset
+
+We are going to use data from MovieLens.There are two options: Small and Large. Use the Large one for better results. Let us use Movies.csv and Ratings.csv for details.
+
+```{r}
+movies <- read.csv("C:/Users/Dhruba/Desktop/GitHub/R - GitHub/data/movies.csv",stringsAsFactors=FALSE)
+ratings<- read.csv("C:/Users/Dhruba/Desktop/GitHub/R - GitHub/data/ratings.csv")
+```
+
+### Data Exploration and Pre-processing
+
+```{r}
+head(movies)
+head(ratings)
+```
+
+Convert the genres present in the movie_data dataframe into a more usable format by the users.
+
+```{r}
+genres <- as.data.frame(movies$genres, stringsAsFactors=FALSE)
+
+genres2 <- as.data.frame(tstrsplit(genres[,1], '[|]', type.convert=TRUE), stringsAsFactors=FALSE)
+colnames(genres2) <- c(1:10)
+unique(genres2[,1])
+
+genre_list <- c("Action", "Adventure", "Animation", "Children", 
+                "Comedy", "Crime","Documentary", "Drama", "Fantasy",
+                "Film-Noir", "Horror", "Musical", "Mystery","Romance",
+                "Sci-Fi", "Thriller", "War", "Western") # we have 18 genres in total
+
+genre_matrix <- matrix(0,9743,18) #empty matrix, 10330=no of movies+1, 18=no of genres
+genre_matrix[1,] <- genre_list #set first row to genre list
+colnames(genre_matrix) <- genre_list #set column names to genre list
+
+#iterate through matrix
+for (i in 1:nrow(genres2)) {
+  for (c in 1:ncol(genres2)) {
+    genmat_col = which(genre_matrix[1,] == genres2[i,c])
+    genre_matrix[i+1,genmat_col] <- 1
+  }
+}
+
+#convert into dataframe
+genre_matrix2 <- as.data.frame(genre_matrix[-1,], stringsAsFactors=FALSE) #remove first row, which was the genre list
+for (c in 1:ncol(genre_matrix2)) {
+  genre_matrix2[,c] <- as.integer(genre_matrix2[,c])
+} #convert from characters to integers
+
+#Create a matrix to search for a movie by genre:
+years <- as.data.frame(movies$title, stringsAsFactors=FALSE)
+library(data.table)
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+years <- as.data.frame(substr(substrRight(substrRight(years$`movies$title`, 6),5),1,4))
+```
+
+### Search Matrix
+Create a ‘search matrix’ that will allow us to perform an easy search of the films by specifying the genre present in our list.
+
+```{r}
+search_matrix <- cbind(movies[,1], substr(movies[,2],1,nchar(movies[,2])-6), years, genre_matrix2)
+colnames(search_matrix) <- c("movieId", "title", "year", genre_list)
+head(search_matrix)
+```
+
+### Create a user profile
+```{r}
+binaryratings <- ratings
+```
+
+Ratings of 4 and 5 are mapped to 1, representing likes, and ratings of 3 and below are mapped to -1, representing dislikes:
+
+```{r}
+for (i in 1:nrow(binaryratings)){
+  if (binaryratings[i,3] > 3){
+    binaryratings[i,3] <- 1
+  }
+  else{
+    binaryratings[i,3] <- -1
+  }
+}
+
+# convert binaryratings matrix to the correct format:
+binaryratings2 <- dcast(binaryratings, movieId~userId, value.var = "rating", na.rm=FALSE)
+
+for (i in 1:ncol(binaryratings2)){
+  binaryratings2[which(is.na(binaryratings2[,i]) == TRUE),i] <- 0
+}
+binaryratings2 = binaryratings2[,-1] #remove movieIds col. Rows are movieIds, cols are userIds
+```
+
+
+### Remove rows that are not rated from movies dataset
+```{r}
+movieIds <- length(unique(movies$movieId)) #10329
+ratingmovieIds <- length(unique(ratings$movieId)) #10325
+movies2 <- movies[-which((movies$movieId %in% ratings$movieId) == FALSE),]
+rownames(movies2) <- NULL
+```
+
+### Remove rows that are not rated from genre_matrix2
+```{r}
+genre_matrix3 <- genre_matrix2[-which((movies$movieId %in% ratings$movieId) == FALSE),]
+rownames(genre_matrix3) <- NULL
+```
+
+###  Creating USER PROFILES
+Calculate the dot product of the genre matrix and the ratings matrix and obtain the user profiles
+
+```{r}
+result = matrix(0,18,668) # here, 668=no of users/raters, 18=no of genres
+for (c in 1:ncol(binaryratings2)){
+  for (i in 1:ncol(genre_matrix3)){
+    result[i,c] <- sum((genre_matrix3[,i]) * (binaryratings2[,c])) #ratings per genre
+  }
+}
+
+#Convert to Binary scale
+for (c in 1:ncol(result)){
+  for (i in 1:nrow(result)){
+    if (result[i,c] < 0){
+      result[i,c] <- 0
+    }
+    else {
+      result[i,c] <- 1
+    }
+  }
+}
+```
+
+### BUILD THE MODEL: User-Based Collaborative Filtering Approach RECOMMENDATION ENGINE
+
+Assume that users like similar items, and retrieve movies that are closest in similarity to a user's profile, which represents a user's preference for an item's feature. Use Jaccard Distance to measure the similarity between user profiles.
+
+```{r}
+#Create ratings matrix. Rows = userId, Columns = movieId
+ratingmat <- dcast(ratings, userId~movieId, value.var = "rating", na.rm=FALSE)
+ratingmat <- as.matrix(ratingmat[,-1]) #remove userIds
+
+# Method: UBCF
+# Similarity Calculation Method: Cosine Similarity
+# Nearest Neighbors: 30
+
+#Convert rating matrix into a recommenderlab sparse matrix
+ratingmat <- as(ratingmat, "realRatingMatrix")
+
+# Determine how similar the first four users are with each other
+# create similarity matrix
+similarity_users <- similarity(ratingmat[1:4, ], 
+                               method = "cosine", 
+                               which = "users")
+as.matrix(similarity_users)
+image(as.matrix(similarity_users), main = "User similarity")
+
+# compute similarity between
+# the first four movies
+similarity_items <- similarity(ratingmat[, 1:4], method =
+                                 "cosine", which = "items")
+as.matrix(similarity_items)
+image(as.matrix(similarity_items), main = "Item similarity")
+
+# Exploring values of ratings:
+vector_ratings <- as.vector(ratingmat@data)
+unique(vector_ratings) # what are unique values of ratings
+
+table_ratings <- table(vector_ratings) # what is the count of each rating value
+table_ratings
+
+```
+
+### Visualize the rating:
+
+```{r}
+vector_ratings <- vector_ratings[vector_ratings != 0] # rating == 0 are NA values
+vector_ratings <- factor(vector_ratings)
+
+qplot(vector_ratings) + 
+  ggtitle("Distribution of the ratings")
+
+# Exploring viewings of movies:
+views_per_movie <- colCounts(ratingmat) # count views for each movie
+
+table_views <- data.frame(movie = names(views_per_movie),
+                          views = views_per_movie) # create dataframe of views
+table_views <- table_views[order(table_views$views, 
+                                 decreasing = TRUE), ] # sort by number of views
+
+ggplot(table_views[1:6, ], aes(x = movie, y = views)) +
+  geom_bar(stat="identity") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_x_discrete(labels=subset(movies2, movies2$movieId == table_views$movie)$title) +
+  ggtitle("Number of views of the top movies")
+
+#Visualizing the matrix:
+image(ratingmat[1:10, 1:15], main = "Heatmap of the first rows and columns")
+image(ratingmat[rowCounts(ratingmat) > quantile(rowCounts(ratingmat), 0.99),
+                 colCounts(ratingmat) > quantile(colCounts(ratingmat), 0.99)], 
+      main = "Heatmap of the top users and movies")
+```
+
+### Normalize the data
+```{r}
+ratingmat_norm <- normalize(ratingmat)
+image(ratingmat_norm[rowCounts(ratingmat_norm) > quantile(rowCounts(ratingmat_norm), 0.99),
+                colCounts(ratingmat_norm) > quantile(colCounts(ratingmat_norm), 0.99)], 
+      main = "Heatmap of the top users and movies")
+```
+
+### THE MODEL: User-Based Collaborative Filtering Approach RECOMMENDATION ENGINE
+
+```{r}
+recommender_model <- Recommender(ratingmat_norm, 
+                                 method = "UBCF", 
+                                 param=list(method="Cosine",nn=30))
+recommender_model
+model_details <- getModel(recommender_model)
+model_details$data
+
+## For prediction using the model
+recom <- predict(recommender_model, 
+                 ratingmat[1], 
+                 n=10) #Obtain top 10 recommendations for 1st user in dataset
+
+recom_list <- as(recom, 
+                 "list") #convert recommenderlab object to readable list
+
+```
+
+### For predictions
+```{r}
+user1 <- recom@items[[1]] # recommendation for the first user
+movies_user1 <- recom@itemLabels[user1]
+movies_user2 <- movies_user1
+for (index in 1:10){
+  movies_user2[index] <- as.character(subset(movies,
+                                             movies$movieId == movies_user1[index])$title)
+}
+movies_user2
+```
+
+
